@@ -78,3 +78,21 @@ Push to Docker Hub:
 docker login
 docker push <your-dockerhub-username>/inventory-order-management:latest
 ```
+
+## Vercel + Render
+
+Deploy the frontend to Vercel as a separate project with the `frontend/` folder as the root directory.
+
+Set this environment variable in Vercel:
+
+- `VITE_API_URL=https://<your-render-backend>.onrender.com`
+
+Deploy the backend to Render from the `render.yaml` blueprint or manually as a Python web service with:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Environment variables:
+  - `DATABASE_URL` from Render Postgres
+  - `CORS_ORIGINS=https://<your-vercel-app>.vercel.app`
+
+Render and Vercel both create preview URLs too, so if you use previews you should add those preview domains to `CORS_ORIGINS` as well.
