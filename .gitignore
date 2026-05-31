@@ -1,0 +1,12 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.env
+.env.*
+backend/inventory.db
+backend/.venv/
+frontend/.vite/
+frontend/node_modules/
+*.log
+
