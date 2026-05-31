@@ -1,49 +1,32 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Query
+from pathlib import Path
+import time
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from .database import Base, engine, get_db
-from .models import Customer, Order, OrderItem, Product
-from .schemas import (
-    CustomerCreate,
-    CustomerRead,
-    DashboardSummary,
-    OrderCreate,
-    OrderRead,
-    ProductCreate,
-    ProductRead,
-    ProductUpdate,
-)
-from .services import (
-    cancel_order,
-    create_customer,
-    create_order,
-    create_product,
-    dashboard_summary,
-    delete_customer,
-    delete_product,
-    get_customer,
-    get_order,
-    get_product,
-    list_customers,
-    list_orders,
-    list_products,
-    update_product,
+from .api.routes.customers import router as customers_router
+from .api.routes.dashboard import router as dashboard_router
+from .api.routes.orders import router as orders_router
+from .api.routes.products import router as products_router
+from .database import Base, engine
+from .settings import cors_origins
+
+
+app = FastAPI(
+    title="Inventory & Order Management API",
+    version="1.0.0",
+    description="A compact operations API for products, customers, orders, and stock tracking.",
 )
 
-
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Inventory & Order Management API")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,78 +34,47 @@ app.add_middleware(
 
 
 @app.get("/")
+def root():
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"status": "ok", "service": "inventory-order-api", "mode": "modular"}
+
+
+@app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "inventory-order-api"}
+    return {"status": "ok", "service": "inventory-order-api", "mode": "modular"}
 
 
-@app.post("/products", response_model=ProductRead, status_code=201)
-def api_create_product(payload: ProductCreate, db: Session = Depends(get_db)):
-    return create_product(db, payload)
+@app.on_event("startup")
+def create_database_schema():
+    last_error = None
+    for _ in range(10):
+        try:
+            Base.metadata.create_all(bind=engine)
+            return
+        except Exception as exc:  # pragma: no cover - startup retry for containerized DBs
+            last_error = exc
+            time.sleep(2)
+    if last_error:
+        raise last_error
 
 
-@app.get("/products", response_model=list[ProductRead])
-def api_list_products(db: Session = Depends(get_db)):
-    return list_products(db)
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
 
-@app.get("/products/{product_id}", response_model=ProductRead)
-def api_get_product(product_id: int, db: Session = Depends(get_db)):
-    return get_product(db, product_id)
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str):
+    if full_path.startswith("products") or full_path.startswith("customers") or full_path.startswith("orders") or full_path.startswith("dashboard"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    raise HTTPException(status_code=404, detail="Frontend not built")
 
 
-@app.put("/products/{product_id}", response_model=ProductRead)
-def api_update_product(product_id: int, payload: ProductUpdate, db: Session = Depends(get_db)):
-    return update_product(db, product_id, payload)
-
-
-@app.delete("/products/{product_id}", status_code=204)
-def api_delete_product(product_id: int, db: Session = Depends(get_db)):
-    delete_product(db, product_id)
-
-
-@app.post("/customers", response_model=CustomerRead, status_code=201)
-def api_create_customer(payload: CustomerCreate, db: Session = Depends(get_db)):
-    return create_customer(db, payload)
-
-
-@app.get("/customers", response_model=list[CustomerRead])
-def api_list_customers(db: Session = Depends(get_db)):
-    return list_customers(db)
-
-
-@app.get("/customers/{customer_id}", response_model=CustomerRead)
-def api_get_customer(customer_id: int, db: Session = Depends(get_db)):
-    return get_customer(db, customer_id)
-
-
-@app.delete("/customers/{customer_id}", status_code=204)
-def api_delete_customer(customer_id: int, db: Session = Depends(get_db)):
-    delete_customer(db, customer_id)
-
-
-@app.post("/orders", response_model=OrderRead, status_code=201)
-def api_create_order(payload: OrderCreate, db: Session = Depends(get_db)):
-    return create_order(db, payload)
-
-
-@app.get("/orders", response_model=list[OrderRead])
-def api_list_orders(db: Session = Depends(get_db)):
-    return list_orders(db)
-
-
-@app.get("/orders/{order_id}", response_model=OrderRead)
-def api_get_order(order_id: int, db: Session = Depends(get_db)):
-    return get_order(db, order_id)
-
-
-@app.delete("/orders/{order_id}", response_model=OrderRead)
-def api_cancel_order(order_id: int, db: Session = Depends(get_db)):
-    return cancel_order(db, order_id)
-
-
-@app.get("/dashboard/summary", response_model=DashboardSummary)
-def api_dashboard_summary(
-    db: Session = Depends(get_db),
-    low_stock_threshold: int | None = Query(default=None, ge=0),
-):
-    return dashboard_summary(db, threshold=low_stock_threshold)
+app.include_router(products_router)
+app.include_router(customers_router)
+app.include_router(orders_router)
+app.include_router(dashboard_router)

@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL ?? "";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
@@ -35,14 +35,10 @@ export const api = {
   createProduct: (data) => request("/products", { method: "POST", body: JSON.stringify(data) }),
   updateProduct: (id, data) => request(`/products/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProduct: (id) => request(`/products/${id}`, { method: "DELETE" }),
-  getProduct: (id) => request(`/products/${id}`),
   listCustomers: () => request("/customers"),
   createCustomer: (data) => request("/customers", { method: "POST", body: JSON.stringify(data) }),
   deleteCustomer: (id) => request(`/customers/${id}`, { method: "DELETE" }),
-  getCustomer: (id) => request(`/customers/${id}`),
   listOrders: () => request("/orders"),
   createOrder: (data) => request("/orders", { method: "POST", body: JSON.stringify(data) }),
-  getOrder: (id) => request(`/orders/${id}`),
   cancelOrder: (id) => request(`/orders/${id}`, { method: "DELETE" }),
 };
-

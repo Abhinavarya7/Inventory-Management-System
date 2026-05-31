@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
-
 from sqlalchemy import create_engine, event
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from .settings import database_url
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./inventory.db")
+DATABASE_URL = database_url()
 
 engine_kwargs = {
     "future": True,
@@ -14,8 +14,14 @@ engine_kwargs = {
 }
 
 connect_args = {}
+engine_kwargs = {
+    "future": True,
+    "pool_pre_ping": True,
+}
 if DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+    if DATABASE_URL == "sqlite://":
+        engine_kwargs["poolclass"] = StaticPool
 
 engine = create_engine(
     DATABASE_URL,

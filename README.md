@@ -32,7 +32,7 @@ uvicorn app.main:app --reload
 
 Copy `backend/.env.example` to `.env` and set `DATABASE_URL` to your PostgreSQL connection string.
 
-If `DATABASE_URL` is not set, the app falls back to a local SQLite database for convenience.
+If `DATABASE_URL` is not set, the app falls back to an in-memory SQLite database for convenience.
 
 ## Frontend
 
@@ -58,3 +58,23 @@ Use the included `docker-compose.yml` to start PostgreSQL:
 docker compose up -d db
 ```
 
+## Docker
+
+Build the full-stack image:
+
+```bash
+docker build -t <your-dockerhub-username>/inventory-order-management:latest .
+```
+
+Run the app with PostgreSQL:
+
+```bash
+docker compose up --build
+```
+
+Push to Docker Hub:
+
+```bash
+docker login
+docker push <your-dockerhub-username>/inventory-order-management:latest
+```

@@ -4,9 +4,13 @@ __pycache__/
 *.pyc
 .env
 .env.*
+inventory.db
+inventory.db-journal
+*.db-journal
+*.db-shm
 backend/inventory.db
+backend/local_inventory.db
 backend/.venv/
 frontend/.vite/
 frontend/node_modules/
 *.log
-

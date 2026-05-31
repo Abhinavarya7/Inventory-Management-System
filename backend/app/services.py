@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from decimal import Decimal
 
@@ -10,9 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .models import Customer, Order, OrderItem, Product
 from .schemas import CustomerCreate, OrderCreate, ProductCreate, ProductUpdate
-
-
-LOW_STOCK_THRESHOLD = int(os.getenv("LOW_STOCK_THRESHOLD", "10"))
+from .settings import low_stock_threshold
 
 
 def _not_found(entity: str) -> HTTPException:
@@ -206,14 +203,14 @@ def cancel_order(db: Session, order_id: int) -> Order:
 
 
 def dashboard_summary(db: Session, threshold: int | None = None) -> dict:
-    low_stock_threshold = LOW_STOCK_THRESHOLD if threshold is None else threshold
+    stock_threshold = low_stock_threshold() if threshold is None else threshold
     total_products = db.scalar(select(func.count()).select_from(Product)) or 0
     total_customers = db.scalar(select(func.count()).select_from(Customer)) or 0
     total_orders = db.scalar(select(func.count()).select_from(Order)) or 0
     low_stock_products = list(
         db.scalars(
             select(Product)
-            .where(Product.quantity_in_stock <= low_stock_threshold)
+            .where(Product.quantity_in_stock <= stock_threshold)
             .order_by(Product.quantity_in_stock.asc(), Product.name.asc())
         )
     )
@@ -222,7 +219,6 @@ def dashboard_summary(db: Session, threshold: int | None = None) -> dict:
         "total_products": total_products,
         "total_customers": total_customers,
         "total_orders": total_orders,
-        "low_stock_threshold": low_stock_threshold,
+        "low_stock_threshold": stock_threshold,
         "low_stock_products": low_stock_products,
     }
-

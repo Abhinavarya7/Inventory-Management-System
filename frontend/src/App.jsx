@@ -1,5 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { api } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import KpiCard from "./components/KpiCard";
+import Panel from "./components/Panel";
+import StatusPill from "./components/StatusPill";
+import { api } from "./lib/api";
+import { formatCurrency } from "./lib/format";
 
 const emptyProduct = {
   id: null,
@@ -15,14 +19,10 @@ const emptyCustomer = {
   phone_number: "",
 };
 
-const emptyOrderItem = () => ({ product_id: "", quantity: 1 });
+const emptyLineItem = () => ({ product_id: "", quantity: 1 });
 
-function formatCurrency(value) {
-  const number = Number(value || 0);
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(number);
+function orderTone(status) {
+  return status === "cancelled" ? "muted" : "success";
 }
 
 export default function App() {
@@ -36,64 +36,79 @@ export default function App() {
     low_stock_threshold: 10,
     low_stock_products: [],
   });
-  const [productForm, setProductForm] = useState(emptyProduct);
-  const [customerForm, setCustomerForm] = useState(emptyCustomer);
-  const [orderForm, setOrderForm] = useState({
+  const [productDraft, setProductDraft] = useState(emptyProduct);
+  const [customerDraft, setCustomerDraft] = useState(emptyCustomer);
+  const [orderDraft, setOrderDraft] = useState({
     customer_id: "",
-    items: [emptyOrderItem()],
+    items: [emptyLineItem()],
   });
-  const [selectedOrder, setSelectedOrder] = useState(null);
-  const [message, setMessage] = useState("");
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function loadAll() {
+  async function loadWorkspace(preferredOrderId = null) {
     setLoading(true);
     try {
-      const [dashboard, productList, customerList, orderList] = await Promise.all([
+      const [dashboard, nextProducts, nextCustomers, nextOrders] = await Promise.all([
         api.getDashboard(),
         api.listProducts(),
         api.listCustomers(),
         api.listOrders(),
       ]);
+
       setSummary(dashboard);
-      setProducts(productList);
-      setCustomers(customerList);
-      setOrders(orderList);
-      if (selectedOrder) {
-        const refreshedSelection = orderList.find((order) => order.id === selectedOrder.id);
-        setSelectedOrder(refreshedSelection || orderList[0] || null);
-      } else if (orderList.length > 0) {
-        setSelectedOrder(orderList[0]);
-      }
+      setProducts(nextProducts);
+      setCustomers(nextCustomers);
+      setOrders(nextOrders);
+      setSelectedOrderId((current) => {
+        const desired = preferredOrderId ?? current;
+        if (desired && nextOrders.some((order) => order.id === desired)) {
+          return desired;
+        }
+        return nextOrders[0]?.id ?? null;
+      });
     } catch (err) {
-      setError(err.message || "Unable to load data");
+      setError(err.message || "Unable to load the workspace");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadAll();
+    loadWorkspace();
   }, []);
 
-  async function runAction(action, successMessage, onSuccess) {
+  const selectedOrder = useMemo(
+    () => orders.find((order) => order.id === selectedOrderId) || null,
+    [orders, selectedOrderId],
+  );
+
+  const lowStockCount = summary.low_stock_products.length;
+  const lineItemPreviewTotal = useMemo(() => {
+    return orderDraft.items.reduce((total, item) => {
+      const product = products.find((entry) => entry.id === Number(item.product_id));
+      if (!product) return total;
+      return total + Number(product.price) * Number(item.quantity || 0);
+    }, 0);
+  }, [orderDraft.items, products]);
+
+  async function runMutation(action, successMessage, preferredOrderId = null) {
     setError("");
-    setMessage("");
+    setNotice("");
     try {
       const result = await action();
-      setMessage(successMessage);
-      await loadAll();
-      if (onSuccess) {
-        onSuccess(result);
-      }
+      await loadWorkspace(preferredOrderId);
+      setNotice(successMessage);
+      return result;
     } catch (err) {
       setError(err.message || "Something went wrong");
+      return null;
     }
   }
 
-  function startEditProduct(product) {
-    setProductForm({
+  function editProduct(product) {
+    setProductDraft({
       id: product.id,
       name: product.name,
       sku: product.sku,
@@ -103,12 +118,12 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function resetProductForm() {
-    setProductForm(emptyProduct);
+  function resetProductDraft() {
+    setProductDraft(emptyProduct);
   }
 
-  function updateOrderItem(index, field, value) {
-    setOrderForm((current) => ({
+  function updateLineItem(index, field, value) {
+    setOrderDraft((current) => ({
       ...current,
       items: current.items.map((item, itemIndex) =>
         itemIndex === index ? { ...item, [field]: value } : item,
@@ -116,142 +131,147 @@ export default function App() {
     }));
   }
 
-  function addOrderItem() {
-    setOrderForm((current) => ({
+  function appendLineItem() {
+    setOrderDraft((current) => ({
       ...current,
-      items: [...current.items, emptyOrderItem()],
+      items: [...current.items, emptyLineItem()],
     }));
   }
 
-  function removeOrderItem(index) {
-    setOrderForm((current) => ({
+  function removeLineItem(index) {
+    setOrderDraft((current) => ({
       ...current,
       items: current.items.length === 1 ? current.items : current.items.filter((_, itemIndex) => itemIndex !== index),
     }));
   }
 
-  const lowStockCount = summary.low_stock_products.length;
-  const orderPreviewTotal = useMemo(() => {
-    return orderForm.items.reduce((total, item) => {
-      const product = products.find((entry) => entry.id === Number(item.product_id));
-      if (!product) {
-        return total;
-      }
-      return total + Number(product.price) * Number(item.quantity || 0);
-    }, 0);
-  }, [orderForm.items, products]);
-
   async function submitProduct(event) {
     event.preventDefault();
+
     const payload = {
-      name: productForm.name.trim(),
-      sku: productForm.sku.trim(),
-      price: Number(productForm.price),
-      quantity_in_stock: Number(productForm.quantity_in_stock),
+      name: productDraft.name.trim(),
+      sku: productDraft.sku.trim(),
+      price: Number(productDraft.price),
+      quantity_in_stock: Number(productDraft.quantity_in_stock),
     };
 
-    await runAction(
-      async () => {
-        if (productForm.id) {
-          await api.updateProduct(productForm.id, payload);
-        } else {
-          await api.createProduct(payload);
-        }
-        resetProductForm();
-      },
-      productForm.id ? "Product updated successfully." : "Product created successfully.",
+    await runMutation(
+      () =>
+        productDraft.id
+          ? api.updateProduct(productDraft.id, payload)
+          : api.createProduct(payload),
+      productDraft.id ? "Product updated." : "Product added.",
     );
+
+    setProductDraft(emptyProduct);
   }
 
   async function submitCustomer(event) {
     event.preventDefault();
-    await runAction(async () => {
-      await api.createCustomer({
-        full_name: customerForm.full_name.trim(),
-        email: customerForm.email.trim(),
-        phone_number: customerForm.phone_number.trim(),
-      });
-      setCustomerForm(emptyCustomer);
-    }, "Customer created successfully.");
+
+    await runMutation(
+      () =>
+        api.createCustomer({
+          full_name: customerDraft.full_name.trim(),
+          email: customerDraft.email.trim(),
+          phone_number: customerDraft.phone_number.trim(),
+        }),
+      "Customer added.",
+    );
+
+    setCustomerDraft(emptyCustomer);
   }
 
   async function submitOrder(event) {
     event.preventDefault();
-    const items = orderForm.items
+
+    const items = orderDraft.items
       .filter((item) => item.product_id)
       .map((item) => ({
         product_id: Number(item.product_id),
         quantity: Number(item.quantity),
       }));
 
-    await runAction(
-      async () => {
-        const createdOrder = await api.createOrder({
-          customer_id: Number(orderForm.customer_id),
+    const createdOrder = await runMutation(
+      () =>
+        api.createOrder({
+          customer_id: Number(orderDraft.customer_id),
           items,
-        });
-        setOrderForm({
-          customer_id: "",
-          items: [emptyOrderItem()],
-        });
-        return createdOrder;
-      },
-      "Order created successfully.",
-      (createdOrder) => setSelectedOrder(createdOrder),
+        }),
+      "Order created.",
     );
+
+    if (createdOrder) {
+      setSelectedOrderId(createdOrder.id);
+      setOrderDraft({
+        customer_id: "",
+        items: [emptyLineItem()],
+      });
+    }
   }
 
   return (
-    <div className="app-shell">
-      <div className="background-orb background-orb-left" />
-      <div className="background-orb background-orb-right" />
+    <div className="dashboard-shell">
+      <aside className="rail">
+        <div className="brand-block">
+          <p className="brand-mark">Inventory Management App</p>
+          <h1>Manage the Inventory</h1>
+          <p className="brand-copy">
+            Track products, customers, and orders.
+          </p>
+        </div>
 
-      <main className="app-container">
-        <header className="hero">
+        <div className="rail-stack">
+          <KpiCard
+            label="Products"
+            value={summary.total_products}
+            caption="Catalog items currently active"
+          />
+          <KpiCard
+            label="Customers"
+            value={summary.total_customers}
+            caption="Saved customer profiles"
+          />
+          <KpiCard
+            label="Orders"
+            value={summary.total_orders}
+            caption="Placed"
+          />
+          <KpiCard
+            label="Low stock"
+            value={lowStockCount}
+            tone="accent"
+            caption={`Alert threshold: ${summary.low_stock_threshold}`}
+          />
+        </div>
+      </aside>
+
+      <main className="workspace">
+        <header className="hero-card">
           <div>
-            <p className="eyebrow">Inventory & Order Management</p>
-            <h1>Run products, customers, and orders from one clean dashboard.</h1>
+            <p className="eyebrow">Dashboard</p>
+            <h2>Manage products, orders and inventory</h2>
             <p className="hero-copy">
-              Track stock, create orders, and keep customer records in sync with the backend API.
+              Inventory Management System
             </p>
           </div>
-          <div className="hero-badge">
-            <span>API-connected</span>
-            <strong>{loading ? "Syncing..." : "Live data ready"}</strong>
+          <div className="hero-meta">
+            <div>
+              <span>Low stock rule</span>
+              <strong>{summary.low_stock_threshold}</strong>
+            </div>
           </div>
         </header>
 
-        <section className="summary-grid">
-          <article className="summary-card">
-            <span>Total Products</span>
-            <strong>{summary.total_products}</strong>
-          </article>
-          <article className="summary-card">
-            <span>Total Customers</span>
-            <strong>{summary.total_customers}</strong>
-          </article>
-          <article className="summary-card">
-            <span>Total Orders</span>
-            <strong>{summary.total_orders}</strong>
-          </article>
-          <article className="summary-card accent">
-            <span>Low Stock Products</span>
-            <strong>{lowStockCount}</strong>
-          </article>
-        </section>
+        {notice ? <div className="banner success">{notice}</div> : null}
+        {error ? <div className="banner error">{error}</div> : null}
 
-        {message ? <div className="alert success">{message}</div> : null}
-        {error ? <div className="alert error">{error}</div> : null}
-
-        <section className="dashboard-grid">
-          <div className="panel panel-wide">
-            <div className="panel-header">
-              <div>
-                <p className="section-label">Dashboard</p>
-                <h2>Low stock alerts</h2>
-              </div>
-              <span className="threshold-pill">Threshold: {summary.low_stock_threshold}</span>
-            </div>
+        <section className="content-grid">
+          <Panel
+            eyebrow="Stock alerts"
+            title="Low inventory needs attention"
+            className="span-2"
+          >
             {summary.low_stock_products.length ? (
               <div className="table-wrap">
                 <table>
@@ -259,7 +279,7 @@ export default function App() {
                     <tr>
                       <th>Product</th>
                       <th>SKU</th>
-                      <th>Stock</th>
+                      <th>Available</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -268,7 +288,7 @@ export default function App() {
                         <td>{product.name}</td>
                         <td>{product.sku}</td>
                         <td>
-                          <span className="status-pill danger">{product.quantity_in_stock}</span>
+                          <StatusPill tone="danger">{product.quantity_in_stock}</StatusPill>
                         </td>
                       </tr>
                     ))}
@@ -276,38 +296,37 @@ export default function App() {
                 </table>
               </div>
             ) : (
-              <p className="empty-state">No low stock items right now.</p>
+              <p className="empty-state">No products are currently below the low stock threshold.</p>
             )}
-          </div>
+          </Panel>
 
-          <div className="panel">
-            <div className="panel-header">
-              <div>
-                <p className="section-label">Products</p>
-                <h2>{productForm.id ? "Update product" : "Add product"}</h2>
-              </div>
-              {productForm.id ? (
-                <button className="ghost-button" type="button" onClick={resetProductForm}>
+          <Panel
+            eyebrow="Products"
+            title={productDraft.id ? "Edit product" : "Add product"}
+            actions={
+              productDraft.id ? (
+                <button className="ghost-button" type="button" onClick={resetProductDraft}>
                   Cancel edit
                 </button>
-              ) : null}
-            </div>
+              ) : null
+            }
+          >
             <form className="form-grid" onSubmit={submitProduct}>
               <label>
                 <span>Product name</span>
                 <input
-                  value={productForm.name}
-                  onChange={(event) => setProductForm({ ...productForm, name: event.target.value })}
-                  placeholder="Wireless Mouse"
+                  value={productDraft.name}
+                  onChange={(event) => setProductDraft({ ...productDraft, name: event.target.value })}
+                  placeholder="Smart Watch"
                   required
                 />
               </label>
               <label>
-                <span>SKU / code</span>
+                <span>SKU code</span>
                 <input
-                  value={productForm.sku}
-                  onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })}
-                  placeholder="WM-1001"
+                  value={productDraft.sku}
+                  onChange={(event) => setProductDraft({ ...productDraft, sku: event.target.value })}
+                  placeholder="RX-1691"
                   required
                 />
               </label>
@@ -317,32 +336,32 @@ export default function App() {
                   type="number"
                   min="0.01"
                   step="0.01"
-                  value={productForm.price}
-                  onChange={(event) => setProductForm({ ...productForm, price: event.target.value })}
-                  placeholder="49.99"
+                  value={productDraft.price}
+                  onChange={(event) => setProductDraft({ ...productDraft, price: event.target.value })}
+                  placeholder="30"
                   required
                 />
               </label>
               <label>
-                <span>Quantity in stock</span>
+                <span>Stock on hand</span>
                 <input
                   type="number"
                   min="0"
                   step="1"
-                  value={productForm.quantity_in_stock}
+                  value={productDraft.quantity_in_stock}
                   onChange={(event) =>
-                    setProductForm({ ...productForm, quantity_in_stock: event.target.value })
+                    setProductDraft({ ...productDraft, quantity_in_stock: event.target.value })
                   }
                   placeholder="100"
                   required
                 />
               </label>
               <button className="primary-button" type="submit">
-                {productForm.id ? "Update product" : "Add product"}
+                {productDraft.id ? "Save changes" : "Add product"}
               </button>
             </form>
 
-            <div className="table-wrap compact-top">
+            <div className="table-wrap table-space">
               <table>
                 <thead>
                   <tr>
@@ -360,22 +379,19 @@ export default function App() {
                       <td>{product.sku}</td>
                       <td>{formatCurrency(product.price)}</td>
                       <td>
-                        <span className={product.quantity_in_stock <= summary.low_stock_threshold ? "status-pill danger" : "status-pill"}>
+                        <StatusPill tone={product.quantity_in_stock <= summary.low_stock_threshold ? "danger" : "default"}>
                           {product.quantity_in_stock}
-                        </span>
+                        </StatusPill>
                       </td>
                       <td className="actions-cell">
-                        <button className="text-button" type="button" onClick={() => startEditProduct(product)}>
+                        <button className="text-button" type="button" onClick={() => editProduct(product)}>
                           Edit
                         </button>
                         <button
                           className="text-button danger"
                           type="button"
                           onClick={() =>
-                            runAction(
-                              () => api.deleteProduct(product.id),
-                              "Product deleted successfully.",
-                            )
+                            runMutation(() => api.deleteProduct(product.id), "Product deleted.")
                           }
                         >
                           Delete
@@ -386,22 +402,16 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Panel>
 
-          <div className="panel">
-            <div className="panel-header">
-              <div>
-                <p className="section-label">Customers</p>
-                <h2>Add customer</h2>
-              </div>
-            </div>
+          <Panel eyebrow="Customers" title="Add customer">
             <form className="form-grid" onSubmit={submitCustomer}>
               <label>
                 <span>Full name</span>
                 <input
-                  value={customerForm.full_name}
-                  onChange={(event) => setCustomerForm({ ...customerForm, full_name: event.target.value })}
-                  placeholder="Jane Doe"
+                  value={customerDraft.full_name}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, full_name: event.target.value })}
+                  placeholder="Abhinav Arya"
                   required
                 />
               </label>
@@ -409,18 +419,18 @@ export default function App() {
                 <span>Email address</span>
                 <input
                   type="email"
-                  value={customerForm.email}
-                  onChange={(event) => setCustomerForm({ ...customerForm, email: event.target.value })}
-                  placeholder="jane@company.com"
+                  value={customerDraft.email}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, email: event.target.value })}
+                  placeholder="abhinav@iitmandi.com"
                   required
                 />
               </label>
               <label>
                 <span>Phone number</span>
                 <input
-                  value={customerForm.phone_number}
-                  onChange={(event) => setCustomerForm({ ...customerForm, phone_number: event.target.value })}
-                  placeholder="+1 555 0100"
+                  value={customerDraft.phone_number}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, phone_number: event.target.value })}
+                  placeholder="9193778948"
                   required
                 />
               </label>
@@ -429,7 +439,7 @@ export default function App() {
               </button>
             </form>
 
-            <div className="table-wrap compact-top">
+            <div className="table-wrap table-space">
               <table>
                 <thead>
                   <tr>
@@ -450,10 +460,7 @@ export default function App() {
                           className="text-button danger"
                           type="button"
                           onClick={() =>
-                            runAction(
-                              () => api.deleteCustomer(customer.id),
-                              "Customer deleted successfully.",
-                            )
+                            runMutation(() => api.deleteCustomer(customer.id), "Customer deleted.")
                           }
                         >
                           Delete
@@ -464,23 +471,20 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Panel>
 
-          <div className="panel panel-wide">
-            <div className="panel-header">
-              <div>
-                <p className="section-label">Orders</p>
-                <h2>Create order</h2>
-              </div>
-              <div className="total-preview">{formatCurrency(orderPreviewTotal)}</div>
-            </div>
-
+          <Panel
+            eyebrow="Orders"
+            title="Create order"
+            className="span-2"
+            actions={<div className="total-chip">{formatCurrency(lineItemPreviewTotal)}</div>}
+          >
             <form className="form-grid order-form" onSubmit={submitOrder}>
               <label>
                 <span>Customer</span>
                 <select
-                  value={orderForm.customer_id}
-                  onChange={(event) => setOrderForm({ ...orderForm, customer_id: event.target.value })}
+                  value={orderDraft.customer_id}
+                  onChange={(event) => setOrderDraft({ ...orderDraft, customer_id: event.target.value })}
                   required
                 >
                   <option value="">Select a customer</option>
@@ -492,14 +496,14 @@ export default function App() {
                 </select>
               </label>
 
-              <div className="order-items">
-                {orderForm.items.map((item, index) => (
-                  <div key={index} className="order-item-row">
+              <div className="order-lines">
+                {orderDraft.items.map((item, index) => (
+                  <div key={index} className="order-line">
                     <label>
                       <span>Product</span>
                       <select
                         value={item.product_id}
-                        onChange={(event) => updateOrderItem(index, "product_id", event.target.value)}
+                        onChange={(event) => updateLineItem(index, "product_id", event.target.value)}
                         required
                       >
                         <option value="">Select product</option>
@@ -517,14 +521,14 @@ export default function App() {
                         min="1"
                         step="1"
                         value={item.quantity}
-                        onChange={(event) => updateOrderItem(index, "quantity", event.target.value)}
+                        onChange={(event) => updateLineItem(index, "quantity", event.target.value)}
                         required
                       />
                     </label>
                     <button
                       className="text-button danger remove-line"
                       type="button"
-                      onClick={() => removeOrderItem(index)}
+                      onClick={() => removeLineItem(index)}
                     >
                       Remove
                     </button>
@@ -533,7 +537,7 @@ export default function App() {
               </div>
 
               <div className="order-actions">
-                <button className="ghost-button" type="button" onClick={addOrderItem}>
+                <button className="ghost-button" type="button" onClick={appendLineItem}>
                   Add another item
                 </button>
                 <button className="primary-button" type="submit">
@@ -556,27 +560,26 @@ export default function App() {
                   </thead>
                   <tbody>
                     {orders.map((order) => (
-                      <tr key={order.id}>
+                      <tr key={order.id} className={order.id === selectedOrderId ? "active-row" : ""}>
                         <td>#{order.id}</td>
                         <td>{order.customer.full_name}</td>
                         <td>
-                          <span className={order.status === "cancelled" ? "status-pill muted" : "status-pill success"}>
-                            {order.status}
-                          </span>
+                          <StatusPill tone={orderTone(order.status)}>{order.status}</StatusPill>
                         </td>
                         <td>{formatCurrency(order.total_amount)}</td>
                         <td className="actions-cell">
-                          <button className="text-button" type="button" onClick={() => setSelectedOrder(order)}>
-                            View details
+                          <button className="text-button" type="button" onClick={() => setSelectedOrderId(order.id)}>
+                            View
                           </button>
                           <button
                             className="text-button danger"
                             type="button"
                             disabled={order.status === "cancelled"}
                             onClick={() =>
-                              runAction(
+                              runMutation(
                                 () => api.cancelOrder(order.id),
                                 "Order cancelled and inventory restored.",
+                                order.id,
                               )
                             }
                           >
@@ -589,30 +592,25 @@ export default function App() {
                 </table>
               </div>
 
-              <aside className="order-details">
-                <div className="panel-header compact">
-                  <div>
-                    <p className="section-label">Selected order</p>
-                    <h2>{selectedOrder ? `#${selectedOrder.id}` : "Order details"}</h2>
-                  </div>
-                </div>
-
+              <aside className="detail-card">
+                <p className="eyebrow">Selected order</p>
                 {selectedOrder ? (
                   <>
-                    <div className="detail-card">
+                    <h3>#{selectedOrder.id}</h3>
+                    <div className="detail-group">
                       <span>Customer</span>
                       <strong>{selectedOrder.customer.full_name}</strong>
-                      <p>{selectedOrder.customer.email}</p>
+                      <small>{selectedOrder.customer.email}</small>
                     </div>
-                    <div className="detail-card">
+                    <div className="detail-group">
                       <span>Status</span>
                       <strong>{selectedOrder.status}</strong>
                     </div>
-                    <div className="detail-card">
+                    <div className="detail-group">
                       <span>Total</span>
                       <strong>{formatCurrency(selectedOrder.total_amount)}</strong>
                     </div>
-                    <div className="detail-card">
+                    <div className="detail-group">
                       <span>Items</span>
                       <ul className="detail-list">
                         {selectedOrder.items.map((item) => (
@@ -624,13 +622,14 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <p className="empty-state">Select an order to inspect its line items.</p>
+                  <p className="empty-state">Choose an order to inspect its line items and totals.</p>
                 )}
               </aside>
             </div>
-          </div>
+          </Panel>
         </section>
       </main>
     </div>
   );
 }
+
